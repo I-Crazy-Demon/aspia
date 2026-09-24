@@ -42,16 +42,13 @@ jobs:
           python-version: '3.13'
 
       - name: Install Qt 6.11.1 for Android
-        uses: jurplel/install-qt-action@v4
-        env:
-          AQT_MIRRORS_TRUSTED_MIRRORS: https://mirrors.ocf.berkeley.edu/qt
-        with:
-          version: '6.11.1'
-          target: 'android'
-          arch: 'android_arm64_v8a'
-          cache: true
-          setup-python: false
-          extra: '--base https://mirrors.ocf.berkeley.edu/qt'
+        shell: pwsh
+        run: |
+          python -m pip install aqtinstall==3.3.*
+          python -m aqt install-qt windows desktop 6.11.1 win64_mingw -O C:\Qt
+          python -m aqt install-qt windows android 6.11.1 android_arm64_v8a -O C:\Qt
+          "QT_ANDROID_PATH=C:\Qt\6.11.1\android_arm64_v8a" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "QT_HOST_PATH=C:\Qt\6.11.1\mingw_64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
