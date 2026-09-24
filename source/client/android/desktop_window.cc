@@ -521,40 +521,27 @@ void DesktopWindow::start()
 //--------------------------------------------------------------------------------------------------
 void DesktopWindow::fetchConnectionOffer()
 {
-    // The working session exists only while the record is online.
+    // Keep the normal 3.x path when a modern router session is already available.
     if (RouterSession* session = RouterController::session(session_state_->routerId()))
     {
         requestConnectionOffer(session);
         return;
     }
 
-    RouterController& controller = RouterController::instance();
-    const RouterStatus router_status = RouterController::status(session_state_->routerId());
-    if (router_status == RouterStatus::OFFLINE || router_status == RouterStatus::UNREADABLE)
+    // Compatibility path for Router 2.7. NetworkWorker will authenticate to the legacy router
+    // endpoint, request the host and convert the old ConnectionOffer to the current in-memory form.
+    RouterConfig config;
+    const Database::FindResult found =
+        Database::instance().findRouter(session_state_->routerId(), &config);
+
+    if (found != Database::FindResult::FOUND || !config.isValid())
     {
-        setStatusText(router_status == RouterStatus::UNREADABLE ?
-            tr("The data of the router could not be read. Edit the router to enter it again.") :
-            tr("The specified router is unavailable."));
+        setStatusText(tr("The data of the router could not be read. Edit the router to enter it again."));
         return;
     }
 
-    // The record is logging in again (the router connection is also dropped while the app is in
-    // the background); the offer is requested once it is let in.
-    setStatusText(tr("Connecting to router..."));
-
-    // Drop any previous pending wait, then subscribe again.
-    disconnect(&controller, nullptr, this, nullptr);
-    connect(&controller, &RouterController::sig_statusChanged, this,
-        [this](qint64 router_id, RouterStatus status)
-    {
-        if (router_id != session_state_->routerId() || status != RouterStatus::ONLINE)
-            return;
-
-        disconnect(&RouterController::instance(), nullptr, this, nullptr);
-
-        if (RouterSession* session = RouterController::session(session_state_->routerId()))
-            requestConnectionOffer(session);
-    });
+    setStatusText(tr("Connecting to legacy router..."));
+    startNewSession();
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -804,8 +791,7 @@ void DesktopWindow::onStatusChanged(NetworkWorker::Status status, const QVariant
             break;
 
         case NetworkWorker::Status::LEGACY_HOST:
-            setStatusText(tr("Legacy hosts are not supported."));
-            connected_ = false;
+            setStatusText(tr("Legacy compatibility mode."));
             break;
 
         default:
