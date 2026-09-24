@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - android-2.7-compat
     paths-ignore:
       - 'README.md'
       - 'LICENSE.md'
