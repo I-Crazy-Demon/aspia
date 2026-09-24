@@ -41,6 +41,10 @@ class StunUdpRequest;
 class GatewayUdpRequest;
 } // namespace proto::peer
 
+namespace proto::router {
+class ConnectionOffer;
+} // namespace proto::router
+
 enum class UdpMethod;
 
 class NetworkWorker final : public Worker
@@ -123,6 +127,11 @@ private slots:
 
 private:
     void startConnection();
+    void startLegacyRouterConnection();
+    void startRelayConnection(const proto::router::ConnectionOffer& offer);
+    void onLegacyRouterAuthenticated();
+    void onLegacyRouterError(TcpChannel::ErrorCode error_code);
+    void onLegacyRouterMessage(quint8 channel_id, const QByteArray& buffer);
     void routeMessage(quint8 channel_id, const QByteArray& buffer);
     void tcpChannelReady();
     void readBandwidthProbe(const proto::peer::BandwidthProbe& probe, bool via_udp);
@@ -136,6 +145,7 @@ private:
     void selectAttempt(UdpAttempt* attempt);
 
     bool is_legacy_mode_ = false;
+    ScopedQPointer<TcpChannel> legacy_router_channel_;
     ScopedQPointer<TcpChannel> tcp_channel_;
     ScopedQPointer<UdpChannel> udp_channel_;
     ScopedQPointer<RelayPeer> relay_peer_;
