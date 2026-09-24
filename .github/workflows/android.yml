@@ -91,7 +91,6 @@ jobs:
           VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.cache\vcpkg-bincache-arm64-android
           VCPKG_DOWNLOADS: ${{ github.workspace }}\.cache\vcpkg-downloads
         run: |
-          $env:QT_ANDROID_PATH = $env:QT_ROOT_DIR
           Write-Host "QT_ANDROID_PATH=$env:QT_ANDROID_PATH"
           Write-Host "QT_HOST_PATH=$env:QT_HOST_PATH"
           Write-Host "ANDROID_SDK_ROOT=$env:ANDROID_SDK_ROOT"
