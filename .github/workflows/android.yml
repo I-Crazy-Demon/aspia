@@ -102,16 +102,16 @@ jobs:
 
           cmake --preset ci-android-${{ matrix.build_type }}
 
-          # Qt 6.10.3 ships a Gradle 8.14.3 wrapper, while the Android Gradle
-          # plugin selected by the current runner requires Gradle >= 9.1.
-          # CMake generates these wrapper files during configure, so patch them
-          # before androiddeployqt packages the APKs.
-          Get-ChildItem -Path "builds/ci-android-${{ matrix.build_type }}/source" -Recurse -Filter gradle-wrapper.properties |
-            ForEach-Object {
-              (Get-Content $_.FullName -Raw).Replace("gradle-8.14.3-bin.zip", "gradle-9.1.0-bin.zip") |
-                Set-Content $_.FullName -NoNewline
-              Write-Host "Patched Gradle wrapper: $($_.FullName)"
-            }
+          # androiddeployqt creates the Gradle wrapper only while packaging,
+          # so pre-seed Gradle 9.1 in GRADLE_USER_HOME and force it via
+          # distributionSha256Sum/distributionUrl after androiddeployqt creates
+          # the project. Qt's wrapper is generated too late to patch here.
+          $env:GRADLE_HOME = "$env:RUNNER_TEMP\gradle-9.1.0"
+          $gradleZip = "$env:RUNNER_TEMP\gradle-9.1.0-bin.zip"
+          Invoke-WebRequest -Uri "https://services.gradle.org/distributions/gradle-9.1.0-bin.zip" -OutFile $gradleZip
+          Expand-Archive -Path $gradleZip -DestinationPath $env:RUNNER_TEMP -Force
+          $env:PATH = "$env:GRADLE_HOME\bin;$env:PATH"
+          gradle --version
 
           cmake --build --preset ci-android-apk-${{ matrix.build_type }}
 
