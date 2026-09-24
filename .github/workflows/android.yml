@@ -49,6 +49,7 @@ jobs:
           arch: 'android_arm64_v8a'
           cache: true
           setup-python: false
+          use-official: true
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
