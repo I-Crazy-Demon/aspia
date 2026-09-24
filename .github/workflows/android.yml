@@ -36,6 +36,11 @@ jobs:
         with:
           submodules: true
 
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
       - name: Install Qt 6.11.1 for Android
         uses: jurplel/install-qt-action@v4
         with:
@@ -43,6 +48,7 @@ jobs:
           target: 'android'
           arch: 'android_arm64_v8a'
           cache: true
+          setup-python: false
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
