@@ -43,13 +43,15 @@ jobs:
 
       - name: Install Qt 6.11.1 for Android
         uses: jurplel/install-qt-action@v4
+        env:
+          AQT_MIRRORS_TRUSTED_MIRRORS: https://mirrors.ocf.berkeley.edu/qt
         with:
           version: '6.11.1'
           target: 'android'
           arch: 'android_arm64_v8a'
           cache: true
           setup-python: false
-          use-official: true
+          extra: '--base https://mirrors.ocf.berkeley.edu/qt'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
