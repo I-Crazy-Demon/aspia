@@ -50,13 +50,17 @@ jobs:
           "QT_ANDROID_PATH=C:\Qt\6.10.3\android_arm64_v8a" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "QT_HOST_PATH=C:\Qt\6.10.3\mingw_64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android NDK
+      - name: Configure preinstalled Android SDK
         shell: pwsh
         run: |
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+          $sdk = "C:\Android\android-sdk"
+          $sdkmanager = "$sdk\cmdline-tools\16.0\bin\sdkmanager.bat"
+          if (-not (Test-Path $sdkmanager)) {
+            throw "sdkmanager not found: $sdkmanager"
+          }
+          "ANDROID_HOME=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ANDROID_SDK_ROOT=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & $sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
 
       - name: Set up Java 21
         uses: actions/setup-java@v4
