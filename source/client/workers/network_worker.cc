@@ -18,21 +18,26 @@
 
 #include "client/workers/network_worker.h"
 
+#include "base/build_config.h"
 #include "base/logging.h"
 #include "base/serialization.h"
 #include "base/version_constants.h"
+#include "base/net/address.h"
 #include "base/net/tcp_channel_legacy.h"
 #include "base/net/tcp_channel_ng.h"
 #include "base/net/udp_channel.h"
 #include "base/peer/client_authenticator.h"
 #include "base/peer/client_authenticator_legacy.h"
 #include "base/peer/relay_peer.h"
+#include "client/config.h"
+#include "client/database.h"
 #include "client/settings.h"
 #include "client/udp_attempt.h"
 #include "proto/key_exchange.h"
 #include "proto/peer.h"
 #include "proto/router_client.h"
 #include "proto/router_constants.h"
+#include "proto/router_legacy_host.h"
 #include "proto/router_peer.h"
 
 // Registers NetworkWorker::Status so it can cross threads through the queued sig_statusChanged.
@@ -141,6 +146,12 @@ void NetworkWorker::onStop()
 
     udp_ready_ = false;
 
+    if (legacy_router_channel_)
+    {
+        legacy_router_channel_->disconnect();
+        legacy_router_channel_.reset();
+    }
+
     if (relay_peer_)
     {
         relay_peer_->disconnect();
@@ -165,6 +176,9 @@ void NetworkWorker::onStop()
 //--------------------------------------------------------------------------------------------------
 void NetworkWorker::onTimer(TimePoint now)
 {
+    if (legacy_router_channel_)
+        legacy_router_channel_->tick(now);
+
     if (tcp_channel_)
         tcp_channel_->tick(now);
 
@@ -337,6 +351,12 @@ void NetworkWorker::onRelayConnectionReady()
     LOG(INFO) << "Relay connection ready";
     CHECK(relay_peer_);
 
+    if (legacy_router_channel_)
+    {
+        legacy_router_channel_->disconnect();
+        legacy_router_channel_.reset();
+    }
+
     tcp_channel_ = relay_peer_->takeChannel();
     tcp_channel_->setParent(this);
 
@@ -415,6 +435,205 @@ void NetworkWorker::routeMessage(quint8 channel_id, const QByteArray& buffer)
 }
 
 //--------------------------------------------------------------------------------------------------
+void NetworkWorker::startLegacyRouterConnection()
+{
+    if (legacy_router_channel_)
+        return;
+
+    RouterConfig config;
+    const Database::FindResult found =
+        Database::instance().findRouter(session_state_->routerId(), &config);
+
+    if (found != Database::FindResult::FOUND || !config.isValid())
+    {
+        LOG(ERROR) << "Unable to read legacy router config";
+        emit sig_statusChanged(Status::RELAY_ERROR, tr("The router configuration is unavailable."));
+        return;
+    }
+
+    const Address address = Address::fromString(config.address(), kDefaultRouterLegacyHostTcpPort);
+    if (!address.isValid())
+    {
+        LOG(ERROR) << "Invalid legacy router address:" << config.address();
+        emit sig_statusChanged(Status::RELAY_ERROR, tr("The router address is invalid."));
+        return;
+    }
+
+    LOG(INFO) << "Connecting to legacy router" << address.host() << ":" << address.port();
+
+    auto* authenticator = new ClientAuthenticatorLegacy();
+    authenticator->setIdentify(proto::key_exchange::IDENTIFY_SRP);
+    authenticator->setUserName(config.username());
+    authenticator->setPassword(config.password());
+
+    // Aspia 2.7 uses bit 2 for the client session. In 3.x the same numeric value is called
+    // SESSION_TYPE_OPERATOR, so use the wire value explicitly.
+    authenticator->setSessionType(2u);
+
+    legacy_router_channel_ = new TcpChannelLegacy(authenticator, this);
+
+    connect(legacy_router_channel_, &TcpChannel::sig_authenticated,
+            this, &NetworkWorker::onLegacyRouterAuthenticated);
+    connect(legacy_router_channel_, &TcpChannel::sig_errorOccurred,
+            this, &NetworkWorker::onLegacyRouterError);
+    connect(legacy_router_channel_, &TcpChannel::sig_messageReceived,
+            this, &NetworkWorker::onLegacyRouterMessage);
+
+    if (!session_state_->isReconnecting())
+        emit sig_statusChanged(Status::STARTED);
+
+    legacy_router_channel_->connectTo(address.host(), address.port());
+}
+
+//--------------------------------------------------------------------------------------------------
+void NetworkWorker::onLegacyRouterAuthenticated()
+{
+    if (!legacy_router_channel_)
+        return;
+
+    LOG(INFO) << "Legacy router authenticated:" << legacy_router_channel_->peerVersion();
+
+    session_state_->setRouterVersion(legacy_router_channel_->peerVersion());
+    legacy_router_channel_->setPaused(false);
+
+    proto::router::legacy::PeerToRouter message;
+    message.mutable_connection_request()->set_host_id(session_state_->hostId());
+
+    // Aspia 2.7 has one router session channel, id 0.
+    legacy_router_channel_->send(0, serialize(message));
+}
+
+//--------------------------------------------------------------------------------------------------
+void NetworkWorker::onLegacyRouterError(TcpChannel::ErrorCode error_code)
+{
+    LOG(ERROR) << "Legacy router connection failed:" << error_code;
+
+    if (legacy_router_channel_)
+    {
+        legacy_router_channel_->disconnect();
+        legacy_router_channel_.reset();
+    }
+
+    emit sig_statusChanged(
+        Status::RELAY_ERROR,
+        tr("Failed to connect to the router: %1").arg(TcpChannel::errorToString(error_code)));
+}
+
+//--------------------------------------------------------------------------------------------------
+void NetworkWorker::onLegacyRouterMessage(quint8 channel_id, const QByteArray& buffer)
+{
+    if (channel_id != 0)
+    {
+        LOG(WARNING) << "Unexpected legacy router channel:" << channel_id;
+        return;
+    }
+
+    proto::router::legacy::RouterToPeer message;
+    if (!parse(buffer, &message))
+    {
+        LOG(ERROR) << "Unable to parse legacy router reply";
+        emit sig_statusChanged(Status::RELAY_ERROR, tr("Invalid reply from the router."));
+        return;
+    }
+
+    if (message.has_connection_offer())
+    {
+        const proto::router::legacy::ConnectionOffer& legacy_offer = message.connection_offer();
+
+        proto::router::ConnectionOffer offer;
+        offer.mutable_relay()->CopyFrom(legacy_offer.relay());
+        offer.mutable_peer_info()->set_is_legacy(true);
+
+        switch (legacy_offer.error_code())
+        {
+            case proto::router::legacy::ConnectionOffer::SUCCESS:
+                offer.set_error_code(proto::router::kErrorOk);
+                break;
+
+            case proto::router::legacy::ConnectionOffer::PEER_NOT_FOUND:
+                offer.set_error_code(proto::router::kErrorHostOffline);
+                break;
+
+            case proto::router::legacy::ConnectionOffer::ACCESS_DENIED:
+                offer.set_error_code(proto::router::kErrorAccessDenied);
+                break;
+
+            case proto::router::legacy::ConnectionOffer::KEY_POOL_EMPTY:
+                offer.set_error_code(proto::router::kErrorKeyPoolEmpty);
+                break;
+
+            default:
+                offer.set_error_code(proto::router::kErrorInternalError);
+                break;
+        }
+
+        if (legacy_offer.error_code() != proto::router::legacy::ConnectionOffer::SUCCESS ||
+            legacy_offer.peer_role() != proto::router::legacy::ConnectionOffer::CLIENT)
+        {
+            LOG(ERROR) << "Legacy router refused connection, code:" << legacy_offer.error_code();
+            emit sig_statusChanged(
+                Status::RELAY_ERROR,
+                legacy_offer.error_code() == proto::router::legacy::ConnectionOffer::PEER_NOT_FOUND ?
+                    tr("The host is offline.") : tr("The router refused the connection."));
+            return;
+        }
+
+        session_state_->setConnectionOffer(offer);
+        startRelayConnection(offer);
+        return;
+    }
+
+    LOG(WARNING) << "Unhandled legacy router reply";
+}
+
+//--------------------------------------------------------------------------------------------------
+void NetworkWorker::startRelayConnection(const proto::router::ConnectionOffer& offer)
+{
+    if (offer.error_code() != proto::router::kErrorOk)
+    {
+        LOG(ERROR) << "Connection offer not provided or has error:" << offer.error_code();
+        emit sig_statusChanged(Status::RELAY_ERROR, tr("The router did not provide a relay connection."));
+        return;
+    }
+
+    auto setupAuthenticator = [this](auto* auth)
+    {
+        auth->setIdentify(proto::key_exchange::IDENTIFY_SRP);
+        auth->setUserName(session_state_->hostUserName());
+        auth->setPassword(SecureString(session_state_->hostPassword()));
+        auth->setSessionType(static_cast<quint32>(session_state_->sessionType()));
+        auth->setDisplayName(session_state_->displayName());
+    };
+
+    Authenticator* relay_authenticator = nullptr;
+
+    if (kMinimumSupportedVersion < kVersion_3_0_0 && offer.peer_info().is_legacy())
+    {
+        is_legacy_mode_ = true;
+        emit sig_statusChanged(Status::LEGACY_HOST);
+
+        auto* auth = new ClientAuthenticatorLegacy();
+        setupAuthenticator(auth);
+        relay_authenticator = auth;
+    }
+    else
+    {
+        auto* auth = new ClientAuthenticator();
+        setupAuthenticator(auth);
+        relay_authenticator = auth;
+    }
+
+    relay_peer_ = new RelayPeer(relay_authenticator, this);
+
+    connect(relay_peer_, &RelayPeer::sig_connectionError,
+            this, &NetworkWorker::onRelayConnectionError);
+    connect(relay_peer_, &RelayPeer::sig_connectionReady,
+            this, &NetworkWorker::onRelayConnectionReady);
+
+    relay_peer_->start(offer);
+}
+
+//--------------------------------------------------------------------------------------------------
 void NetworkWorker::startConnection()
 {
     auto setupAuthenticator = [this](auto* auth)
@@ -437,47 +656,19 @@ void NetworkWorker::startConnection()
         }
 
         const proto::router::ConnectionOffer offer = session_state_->connectionOffer();
-        if (offer.error_code() != proto::router::kErrorOk)
+
+        // A modern RouterSession preloads the offer. If there is no offer, this compatibility
+        // build asks a 2.7 router directly over the legacy client endpoint (default 8060).
+        if (offer.error_code().empty())
         {
-            LOG(ERROR) << "Connection offer not provided or has error";
+            startLegacyRouterConnection();
             return;
         }
 
         if (!session_state_->isReconnecting())
-        {
-            // Show the status window.
             emit sig_statusChanged(Status::STARTED);
-        }
 
-        // The connection offer tells which protocol the host speaks; RelayPeer picks the channel
-        // by it, and the authenticator must match the channel.
-        Authenticator* relay_authenticator = nullptr;
-
-        // Remove this after support for versions below 3.0.0 ends.
-        if (kMinimumSupportedVersion < kVersion_3_0_0 && offer.peer_info().is_legacy())
-        {
-            is_legacy_mode_ = true;
-            emit sig_statusChanged(Status::LEGACY_HOST);
-
-            auto* auth = new ClientAuthenticatorLegacy();
-            setupAuthenticator(auth);
-            relay_authenticator = auth;
-        }
-        else
-        {
-            auto* auth = new ClientAuthenticator();
-            setupAuthenticator(auth);
-            relay_authenticator = auth;
-        }
-
-        relay_peer_ = new RelayPeer(relay_authenticator, this);
-
-        connect(relay_peer_, &RelayPeer::sig_connectionError,
-                this, &NetworkWorker::onRelayConnectionError);
-        connect(relay_peer_, &RelayPeer::sig_connectionReady,
-                this, &NetworkWorker::onRelayConnectionReady);
-
-        relay_peer_->start(offer);
+        startRelayConnection(offer);
     }
     else
     {
