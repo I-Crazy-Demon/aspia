@@ -50,6 +50,18 @@ jobs:
           "QT_ANDROID_PATH=C:/Qt/6.10.3/android_arm64_v8a" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "QT_HOST_PATH=C:/Qt/6.10.3/mingw_64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+          # Keep Qt 6.10.3's supported Android build stack deterministic.
+          $qtBuildGradle = "C:\Qt\6.10.3\android_arm64_v8a\src\android\templates\build.gradle"
+          $qtWrapper = "C:\Qt\6.10.3\android_arm64_v8a\src\3rdparty\gradle\gradle\wrapper\gradle-wrapper.properties"
+          Write-Host "--- Qt Android build.gradle ---"
+          Get-Content $qtBuildGradle
+          Write-Host "--- Qt Gradle wrapper ---"
+          Get-Content $qtWrapper
+          (Get-Content $qtBuildGradle -Raw) -replace "com\.android\.tools\.build:gradle:[^']+", "com.android.tools.build:gradle:8.10.1" |
+            Set-Content $qtBuildGradle -NoNewline
+          (Get-Content $qtWrapper -Raw) -replace "gradle-[0-9.]+-bin\.zip", "gradle-8.14.3-bin.zip" |
+            Set-Content $qtWrapper -NoNewline
+
       - name: Use preinstalled Android SDK/NDK
         shell: pwsh
         run: |
@@ -101,17 +113,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:VCPKG_DOWNLOADS | Out-Null
 
           cmake --preset ci-android-${{ matrix.build_type }}
-
-          # androiddeployqt creates the Gradle wrapper only while packaging,
-          # so pre-seed Gradle 9.1 in GRADLE_USER_HOME and force it via
-          # distributionSha256Sum/distributionUrl after androiddeployqt creates
-          # the project. Qt's wrapper is generated too late to patch here.
-          $env:GRADLE_HOME = "$env:RUNNER_TEMP\gradle-9.1.0"
-          $gradleZip = "$env:RUNNER_TEMP\gradle-9.1.0-bin.zip"
-          Invoke-WebRequest -Uri "https://services.gradle.org/distributions/gradle-9.1.0-bin.zip" -OutFile $gradleZip
-          Expand-Archive -Path $gradleZip -DestinationPath $env:RUNNER_TEMP -Force
-          $env:PATH = "$env:GRADLE_HOME\bin;$env:PATH"
-          gradle --version
 
           cmake --build --preset ci-android-apk-${{ matrix.build_type }}
 
