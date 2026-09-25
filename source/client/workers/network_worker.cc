@@ -437,6 +437,7 @@ void NetworkWorker::routeMessage(quint8 channel_id, const QByteArray& buffer)
 //--------------------------------------------------------------------------------------------------
 void NetworkWorker::startLegacyRouterConnection()
 {
+    LOG(INFO) << "[LEGACY27] startLegacyRouterConnection";
     if (legacy_router_channel_)
         return;
 
@@ -459,7 +460,7 @@ void NetworkWorker::startLegacyRouterConnection()
         return;
     }
 
-    LOG(INFO) << "Connecting to legacy router" << address.host() << ":" << address.port();
+    LOG(INFO) << "[LEGACY27] connecting legacy router" << address.host() << ":" << address.port();
 
     auto* authenticator = new ClientAuthenticatorLegacy();
     authenticator->setIdentify(proto::key_exchange::IDENTIFY_SRP);
@@ -491,7 +492,7 @@ void NetworkWorker::onLegacyRouterAuthenticated()
     if (!legacy_router_channel_)
         return;
 
-    LOG(INFO) << "Legacy router authenticated:" << legacy_router_channel_->peerVersion();
+    LOG(INFO) << "[LEGACY27] router authentication OK:" << legacy_router_channel_->peerVersion();
 
     session_state_->setRouterVersion(legacy_router_channel_->peerVersion());
     legacy_router_channel_->setPaused(false);
@@ -500,6 +501,7 @@ void NetworkWorker::onLegacyRouterAuthenticated()
     message.mutable_connection_request()->set_host_id(session_state_->hostId());
 
     // Aspia 2.7 has one router session channel, id 0.
+    LOG(INFO) << "[LEGACY27] ConnectionRequest sent for host" << session_state_->hostId();
     legacy_router_channel_->send(0, serialize(message));
 }
 
@@ -522,6 +524,7 @@ void NetworkWorker::onLegacyRouterError(TcpChannel::ErrorCode error_code)
 //--------------------------------------------------------------------------------------------------
 void NetworkWorker::onLegacyRouterMessage(quint8 channel_id, const QByteArray& buffer)
 {
+    LOG(INFO) << "[LEGACY27] router message received, channel" << channel_id << "bytes" << buffer.size();
     if (channel_id != 0)
     {
         LOG(WARNING) << "Unexpected legacy router channel:" << channel_id;
@@ -578,6 +581,7 @@ void NetworkWorker::onLegacyRouterMessage(quint8 channel_id, const QByteArray& b
             return;
         }
 
+        LOG(INFO) << "[LEGACY27] ConnectionOffer received; starting relay connection";
         session_state_->setConnectionOffer(offer);
         startRelayConnection(offer);
         return;
