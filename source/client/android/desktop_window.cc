@@ -521,15 +521,13 @@ void DesktopWindow::start()
 //--------------------------------------------------------------------------------------------------
 void DesktopWindow::fetchConnectionOffer()
 {
-    // Keep the normal 3.x path when a modern router session is already available.
-    if (RouterSession* session = RouterController::session(session_state_->routerId()))
-    {
-        requestConnectionOffer(session);
-        return;
-    }
+    // This compatibility branch targets Aspia Router 2.7. Do not use RouterController here:
+    // it creates a modern NG RouterWorker session even before that session is authenticated,
+    // which makes a 2.7 router wait until the NG connection times out.
+    LOG(INFO) << "[LEGACY27] bypassing RouterWorker for router" << session_state_->routerId();
 
-    // Compatibility path for Router 2.7. NetworkWorker will authenticate to the legacy router
-    // endpoint, request the host and convert the old ConnectionOffer to the current in-memory form.
+    // NetworkWorker authenticates directly to the legacy router endpoint, requests the host and
+    // converts the old ConnectionOffer to the current in-memory form.
     RouterConfig config;
     const Database::FindResult found =
         Database::instance().findRouter(session_state_->routerId(), &config);
